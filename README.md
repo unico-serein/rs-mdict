@@ -1,6 +1,6 @@
 # rust-mdict
 
-A Rust implementation of MDX/MDD dictionary parser, based on [js-mdict](https://github.com/nickyc975/js-mdict).
+A Rust implementation of MDX/MDD dictionary parser, inspired by [js-mdict](https://github.com/nickyc975/js-mdict).
 
 ## Features
 
