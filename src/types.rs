@@ -19,18 +19,13 @@ impl FileExt {
 }
 
 /// Encoding type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Encoding {
+    #[default]
     Utf8,
     Utf16Le,
     Gb18030,
     Big5,
-}
-
-impl Default for Encoding {
-    fn default() -> Self {
-        Encoding::Utf8
-    }
 }
 
 /// Encryption type

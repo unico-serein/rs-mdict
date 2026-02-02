@@ -1,5 +1,5 @@
 //! Command-line interface for rust-mdict
-//! 
+//!
 //! Usage:
 //!   mdict-cli <file> lookup <word>
 //!   mdict-cli <file> prefix <prefix>
@@ -8,7 +8,7 @@
 use std::env;
 use std::process;
 
-use rust_mdict::{Mdx, Mdd};
+use rust_mdict::{Mdd, Mdx};
 
 fn print_usage() {
     eprintln!("Usage:");
@@ -22,18 +22,18 @@ fn print_usage() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 3 {
         print_usage();
         process::exit(1);
     }
-    
+
     let filepath = &args[1];
     let command = &args[2];
-    
+
     // Determine file type
     let is_mdd = filepath.to_lowercase().ends_with(".mdd");
-    
+
     if is_mdd {
         handle_mdd(filepath, command, &args[3..]);
     } else {
@@ -49,7 +49,7 @@ fn handle_mdx(filepath: &str, command: &str, args: &[String]) {
             process::exit(1);
         }
     };
-    
+
     match command {
         "lookup" => {
             if args.is_empty() {
@@ -124,7 +124,7 @@ fn handle_mdd(filepath: &str, command: &str, args: &[String]) {
             process::exit(1);
         }
     };
-    
+
     match command {
         "locate" => {
             if args.is_empty() {

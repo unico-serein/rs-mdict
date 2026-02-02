@@ -1,16 +1,16 @@
 //! MDict base implementation
-//! 
+//!
 //! This module provides the core parsing functionality for MDX/MDD files.
 
+use flate2::read::ZlibDecoder;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use flate2::read::ZlibDecoder;
 
 use crate::error::{MdictError, Result};
+use crate::lzo;
 use crate::types::*;
 use crate::utils::{self, bytes_to_number, decode_string, decode_utf16le, parse_header, strip_key};
-use crate::lzo;
 
 /// MDict base parser
 pub struct MdictBase {
@@ -32,7 +32,7 @@ pub struct MdictBase {
     pub record_header: RecordHeader,
     /// Record block info list
     pub record_info_list: Vec<RecordInfo>,
-    
+
     // Internal offsets
     header_end_offset: u64,
     key_header_start_offset: u64,
@@ -52,7 +52,7 @@ impl MdictBase {
         let path = filepath.as_ref();
         let file = File::open(path)?;
         let filepath_str = path.to_string_lossy().to_string();
-        
+
         let mut base = MdictBase {
             file,
             filepath: filepath_str,
@@ -77,31 +77,31 @@ impl MdictBase {
             record_info_end_offset: 0,
             record_block_start_offset: 0,
         };
-        
+
         base.read_dict()?;
         Ok(base)
     }
-    
+
     /// Read and parse the dictionary file
     fn read_dict(&mut self) -> Result<()> {
         // Step 1: Read header
         self.read_header()?;
-        
+
         // Step 2: Read key header
         self.read_key_header()?;
-        
+
         // Step 3: Read key block info
         self.read_key_infos()?;
-        
+
         // Step 4: Read all key blocks
         self.read_key_blocks()?;
-        
+
         // Step 5: Read record header
         self.read_record_header()?;
-        
+
         // Step 6: Read record block info
         self.read_record_infos()?;
-        
+
         // Sort keyword list - capture needed values before closure
         let is_mdd = self.meta.ext == FileExt::Mdd;
         self.keyword_list.sort_by(|a, b| {
@@ -109,10 +109,10 @@ impl MdictBase {
             let key_b = strip_key(&b.key_text, is_mdd);
             key_a.cmp(&key_b)
         });
-        
+
         Ok(())
     }
-    
+
     /// Read buffer from file at offset
     fn read_buffer(&mut self, offset: u64, length: usize) -> Result<Vec<u8>> {
         self.file.seek(SeekFrom::Start(offset))?;
@@ -120,48 +120,56 @@ impl MdictBase {
         self.file.read_exact(&mut buffer)?;
         Ok(buffer)
     }
-    
+
     /// Read header section
     fn read_header(&mut self) -> Result<()> {
         // [0:4] - 4 bytes header length (big-endian)
         let header_size_buf = self.read_buffer(0, 4)?;
         let header_byte_size = bytes_to_number(&header_size_buf) as usize;
-        
+
         // [4:header_byte_size + 4] - header content
         let header_buffer = self.read_buffer(4, header_byte_size)?;
-        
+
         // [header_bytes_size + 4:header_bytes_size + 8] - Adler32 checksum (skip)
         self.header_end_offset = (header_byte_size + 4 + 4) as u64;
         self.key_header_start_offset = self.header_end_offset;
-        
+
         // Decode UTF-16LE header text
         let header_text = decode_utf16le(&header_buffer)?;
-        
+
         // Parse XML header attributes
         self.header = parse_header(&header_text)?;
-        
+
         // Set default values
         if !self.header.contains_key("KeyCaseSensitive") {
-            self.header.insert("KeyCaseSensitive".to_string(), "No".to_string());
+            self.header
+                .insert("KeyCaseSensitive".to_string(), "No".to_string());
         }
         if !self.header.contains_key("StripKey") {
-            self.header.insert("StripKey".to_string(), "Yes".to_string());
+            self.header
+                .insert("StripKey".to_string(), "Yes".to_string());
         }
-        
+
         // Determine encryption type
-        let encrypted = self.header.get("Encrypted").map(|s| s.as_str()).unwrap_or("");
+        let encrypted = self
+            .header
+            .get("Encrypted")
+            .map(|s| s.as_str())
+            .unwrap_or("");
         self.meta.encrypt = match encrypted {
             "" | "No" => EncryptType::None,
             "Yes" => EncryptType::RecordBlock,
             s => EncryptType::from(s.parse::<u8>().unwrap_or(0)),
         };
-        
+
         // Determine version and number format
-        let version_str = self.header.get("GeneratedByEngineVersion")
+        let version_str = self
+            .header
+            .get("GeneratedByEngineVersion")
             .map(|s| s.as_str())
             .unwrap_or("1.2");
         self.meta.version = version_str.parse::<f64>().unwrap_or(1.2);
-        
+
         if self.meta.version >= 2.0 {
             self.meta.num_width = 8;
             self.meta.num_fmt = NumFmt::Uint64;
@@ -169,12 +177,14 @@ impl MdictBase {
             self.meta.num_width = 4;
             self.meta.num_fmt = NumFmt::Uint32;
         }
-        
+
         // Determine encoding
-        let encoding_str = self.header.get("Encoding")
+        let encoding_str = self
+            .header
+            .get("Encoding")
             .map(|s| s.to_lowercase())
             .unwrap_or_default();
-        
+
         self.meta.encoding = match encoding_str.as_str() {
             "" => Encoding::Utf8,
             "gbk" | "gb2312" => Encoding::Gb18030,
@@ -182,80 +192,88 @@ impl MdictBase {
             "utf16" | "utf-16" => Encoding::Utf16Le,
             _ => Encoding::Utf8,
         };
-        
+
         // MDD files always use UTF-16LE
         if self.meta.ext == FileExt::Mdd {
             self.meta.encoding = Encoding::Utf16Le;
         }
-        
+
         Ok(())
     }
-    
+
     /// Read key header section
     fn read_key_header(&mut self) -> Result<()> {
         self.key_header_start_offset = self.header_end_offset;
-        
+
         // Version >= 2.0: 5 * 8 bytes, otherwise 4 * 4 bytes
-        let header_meta_size = if self.meta.version >= 2.0 { 8 * 5 } else { 4 * 4 };
+        let header_meta_size = if self.meta.version >= 2.0 {
+            8 * 5
+        } else {
+            4 * 4
+        };
         let key_header_buf = self.read_buffer(self.key_header_start_offset, header_meta_size)?;
-        
+
         // Check encryption
         if self.meta.encrypt == EncryptType::RecordBlock {
             if self.meta.passcode.is_none() {
                 return Err(MdictError::EncryptedFileRequiresPasscode);
             }
         }
-        
+
         let mut offset = 0;
         let num_width = self.meta.num_width;
-        
+
         // [0:8/4] - Number of keyword blocks
-        self.key_header.keyword_blocks_num = bytes_to_number(&key_header_buf[offset..offset + num_width]);
+        self.key_header.keyword_blocks_num =
+            bytes_to_number(&key_header_buf[offset..offset + num_width]);
         offset += num_width;
-        
+
         // [8:16/4:8] - Total number of keywords
         self.key_header.keyword_num = bytes_to_number(&key_header_buf[offset..offset + num_width]);
         offset += num_width;
-        
+
         // [16:24/8:12] - KeyBlockInfo decompressed size (v2.0+ only)
         if self.meta.version >= 2.0 {
-            self.key_header.key_info_unpack_size = bytes_to_number(&key_header_buf[offset..offset + num_width]);
+            self.key_header.key_info_unpack_size =
+                bytes_to_number(&key_header_buf[offset..offset + num_width]);
             offset += num_width;
         }
-        
+
         // [24:32/12:16] - KeyBlockInfo compressed size
-        self.key_header.key_info_packed_size = bytes_to_number(&key_header_buf[offset..offset + num_width]);
+        self.key_header.key_info_packed_size =
+            bytes_to_number(&key_header_buf[offset..offset + num_width]);
         offset += num_width;
-        
+
         // [32:40/16:20] - Total size of all KeyBlocks
-        self.key_header.keyword_block_packed_size = bytes_to_number(&key_header_buf[offset..offset + num_width]);
-        
+        self.key_header.keyword_block_packed_size =
+            bytes_to_number(&key_header_buf[offset..offset + num_width]);
+
         // Calculate end offset (v2.0 has additional 4 bytes checksum)
         self.key_header_end_offset = self.key_header_start_offset + header_meta_size as u64;
         if self.meta.version >= 2.0 {
             self.key_header_end_offset += 4;
         }
-        
+
         self.key_block_info_start_offset = self.key_header_end_offset;
-        
+
         Ok(())
     }
-    
+
     /// Read key block info section
     fn read_key_infos(&mut self) -> Result<()> {
         let key_info_size = self.key_header.key_info_packed_size as usize;
         let mut key_info_buf = self.read_buffer(self.key_block_info_start_offset, key_info_size)?;
-        
+
         // Handle v2.0 compression and encryption
         if self.meta.version >= 2.0 {
             // Check compression type
             let comp_type = CompressionType::from_bytes(&key_info_buf);
-            
+
             // Handle encryption
             if self.meta.encrypt == EncryptType::KeyInfoBlock {
                 key_info_buf = utils::mdx_decrypt(&key_info_buf);
             }
-            
+
             // Handle compression
             if comp_type == Some(CompressionType::Zlib) {
                 let compressed_data = &key_info_buf[8..];
@@ -265,71 +283,91 @@ impl MdictBase {
                 key_info_buf = decompressed;
             }
         }
-        
+
         // Decode key block info
         self.key_info_list = self.decode_key_info(&key_info_buf)?;
-        
+
         self.key_block_info_end_offset = self.key_block_info_start_offset + key_info_size as u64;
-        
+
         Ok(())
     }
-    
+
     /// Decode key block info buffer
     fn decode_key_info(&self, key_info_buf: &[u8]) -> Result<Vec<KeyInfoItem>> {
         let key_block_num = self.key_header.keyword_blocks_num as usize;
         let mut key_block_info_list = Vec::with_capacity(key_block_num);
-        
+
         let mut entries_count = 0u64;
         let mut kb_count = 0usize;
         let mut index_offset = 0usize;
         let mut kb_pack_size_accu = 0u64;
         let mut kb_unpack_size_accu = 0u64;
-        
+
         let num_width = self.meta.num_width;
         let is_utf16 = self.meta.encoding == Encoding::Utf16Le;
-        
+
         while kb_count < key_block_num {
             // Read number of entries in this block
-            let block_word_count = bytes_to_number(&key_info_buf[index_offset..index_offset + num_width]);
+            let block_word_count =
+                bytes_to_number(&key_info_buf[index_offset..index_offset + num_width]);
             index_offset += num_width;
-            
+
             // Read first word size
-            let first_word_size_raw = bytes_to_number(&key_info_buf[index_offset..index_offset + num_width / 4]) as usize;
+            let first_word_size_raw =
+                bytes_to_number(&key_info_buf[index_offset..index_offset + num_width / 4]) as usize;
             index_offset += num_width / 4;
-            
+
             // Adjust for encoding
             let first_word_size = if self.meta.version >= 2.0 {
-                if is_utf16 { (first_word_size_raw + 1) * 2 } else { first_word_size_raw + 1 }
+                if is_utf16 {
+                    (first_word_size_raw + 1) * 2
+                } else {
+                    first_word_size_raw + 1
+                }
             } else {
-                if is_utf16 { first_word_size_raw * 2 } else { first_word_size_raw }
+                if is_utf16 {
+                    first_word_size_raw * 2
+                } else {
+                    first_word_size_raw
+                }
             };
-            
+
             // Read first word
             let first_word_buffer = &key_info_buf[index_offset..index_offset + first_word_size];
             index_offset += first_word_size;
-            
+
             // Read last word size
-            let last_word_size_raw = bytes_to_number(&key_info_buf[index_offset..index_offset + num_width / 4]) as usize;
+            let last_word_size_raw =
+                bytes_to_number(&key_info_buf[index_offset..index_offset + num_width / 4]) as usize;
             index_offset += num_width / 4;
-            
+
             let last_word_size = if self.meta.version >= 2.0 {
-                if is_utf16 { (last_word_size_raw + 1) * 2 } else { last_word_size_raw + 1 }
+                if is_utf16 {
+                    (last_word_size_raw + 1) * 2
+                } else {
+                    last_word_size_raw + 1
+                }
             } else {
-                if is_utf16 { last_word_size_raw * 2 } else { last_word_size_raw }
+                if is_utf16 {
+                    last_word_size_raw * 2
+                } else {
+                    last_word_size_raw
+                }
             };
-            
+
             // Read last word
             let last_word_buffer = &key_info_buf[index_offset..index_offset + last_word_size];
             index_offset += last_word_size;
-            
+
             // Read pack size
             let pack_size = bytes_to_number(&key_info_buf[index_offset..index_offset + num_width]);
             index_offset += num_width;
-            
+
             // Read unpack size
-            let unpack_size = bytes_to_number(&key_info_buf[index_offset..index_offset + num_width]);
+            let unpack_size =
+                bytes_to_number(&key_info_buf[index_offset..index_offset + num_width]);
             index_offset += num_width;
-            
+
             // Decode first and last keys
             let first_key = decode_string(first_word_buffer, self.meta.encoding)
                 .unwrap_or_default()
@@ -339,7 +377,7 @@ impl MdictBase {
                 .unwrap_or_default()
                 .trim_end_matches('\0')
                 .to_string();
-            
+
             key_block_info_list.push(KeyInfoItem {
                 first_key,
                 last_key,
@@ -351,59 +389,67 @@ impl MdictBase {
                 key_block_entries_num_accumulator: entries_count,
                 key_block_info_index: kb_count,
             });
-            
+
             kb_count += 1;
             entries_count += block_word_count;
             kb_pack_size_accu += pack_size;
             kb_unpack_size_accu += unpack_size;
         }
-        
+
         Ok(key_block_info_list)
     }
-    
+
     /// Read all key blocks
     fn read_key_blocks(&mut self) -> Result<()> {
         let key_block_start = self.key_block_info_end_offset;
-        
+
         // Collect key info data first to avoid borrowing issues
-        let key_info_data: Vec<(usize, u64, usize, usize)> = self.key_info_list
+        let key_info_data: Vec<(usize, u64, usize, usize)> = self
+            .key_info_list
             .iter()
             .enumerate()
-            .map(|(idx, ki)| (idx, ki.key_block_pack_accumulator, ki.key_block_pack_size as usize, ki.key_block_unpack_size as usize))
+            .map(|(idx, ki)| {
+                (
+                    idx,
+                    ki.key_block_pack_accumulator,
+                    ki.key_block_pack_size as usize,
+                    ki.key_block_unpack_size as usize,
+                )
+            })
             .collect();
-        
+
         for (idx, pack_accum, packed_size, unpack_size) in key_info_data {
             let offset = key_block_start + pack_accum;
-            
+
             let packed_buf = self.read_buffer(offset, packed_size)?;
             let unpacked_buf = self.unpack_key_block(&packed_buf, unpack_size)?;
-            
+
             let mut keywords = self.split_key_block(&unpacked_buf, idx)?;
             self.keyword_list.append(&mut keywords);
         }
-        
+
         // Set record end offsets
         for i in 1..self.keyword_list.len() {
             self.keyword_list[i - 1].record_end_offset = self.keyword_list[i].record_start_offset;
         }
-        
+
         Ok(())
     }
-    
+
     /// Unpack a key block
     fn unpack_key_block(&self, packed_buf: &[u8], unpack_size: usize) -> Result<Vec<u8>> {
-        let comp_type = CompressionType::from_bytes(packed_buf)
-            .ok_or_else(|| MdictError::InvalidCompressionType(
-                u32::from_le_bytes([packed_buf[0], packed_buf[1], packed_buf[2], packed_buf[3]])
-            ))?;
-        
+        let comp_type = CompressionType::from_bytes(packed_buf).ok_or_else(|| {
+            MdictError::InvalidCompressionType(u32::from_le_bytes([
+                packed_buf[0],
+                packed_buf[1],
+                packed_buf[2],
+                packed_buf[3],
+            ]))
+        })?;
+
         match comp_type {
-            CompressionType::None => {
-                Ok(packed_buf[8..].to_vec())
-            }
-            CompressionType::Lzo => {
-                lzo::decompress(&packed_buf[8..], unpack_size)
-            }
+            CompressionType::None => Ok(packed_buf[8..].to_vec()),
+            CompressionType::Lzo => lzo::decompress(&packed_buf[8..], unpack_size),
             CompressionType::Zlib => {
                 let mut decoder = ZlibDecoder::new(&packed_buf[8..]);
                 let mut decompressed = Vec::new();
@@ -412,7 +458,7 @@ impl MdictBase {
             }
         }
     }
-    
+
     /// Split key block into individual keywords
     fn split_key_block(&self, key_block: &[u8], key_block_idx: usize) -> Result<Vec<KeyWordItem>> {
         let width = if self.meta.encoding == Encoding::Utf16Le || self.meta.ext == FileExt::Mdd {
@@ -420,18 +466,19 @@ impl MdictBase {
         } else {
             1
         };
-        
+
         let mut key_list = Vec::new();
         let mut key_start_index = 0;
         let num_width = self.meta.num_width;
-        
+
         while key_start_index < key_block.len() {
             // Read record offset
             if key_start_index + num_width > key_block.len() {
                 break;
             }
-            let meaning_offset = bytes_to_number(&key_block[key_start_index..key_start_index + num_width]);
-            
+            let meaning_offset =
+                bytes_to_number(&key_block[key_start_index..key_start_index + num_width]);
+
             // Find key end (null terminator)
             let mut key_end_index = None;
             let mut i = key_start_index + num_width;
@@ -439,155 +486,172 @@ impl MdictBase {
                 if width == 1 && key_block[i] == 0 {
                     key_end_index = Some(i);
                     break;
-                } else if width == 2 && i + 1 < key_block.len() && key_block[i] == 0 && key_block[i + 1] == 0 {
+                } else if width == 2
+                    && i + 1 < key_block.len()
+                    && key_block[i] == 0
+                    && key_block[i + 1] == 0
+                {
                     key_end_index = Some(i);
                     break;
                 }
                 i += width;
             }
-            
+
             let key_end = match key_end_index {
                 Some(idx) => idx,
                 None => break,
             };
-            
+
             // Extract key text
             let key_text_buffer = &key_block[key_start_index + num_width..key_end];
-            let key_text = decode_string(key_text_buffer, self.meta.encoding)
-                .unwrap_or_default();
-            
+            let key_text = decode_string(key_text_buffer, self.meta.encoding).unwrap_or_default();
+
             key_list.push(KeyWordItem {
                 record_start_offset: meaning_offset,
                 record_end_offset: 0, // Will be set later
                 key_text,
                 key_block_idx,
             });
-            
+
             key_start_index = key_end + width;
         }
-        
+
         Ok(key_list)
     }
-    
+
     /// Read record header section
     fn read_record_header(&mut self) -> Result<()> {
-        self.record_header_start_offset = self.key_block_info_end_offset + self.key_header.keyword_block_packed_size;
-        
-        let record_header_len = if self.meta.version >= 2.0 { 4 * 8 } else { 4 * 4 };
+        self.record_header_start_offset =
+            self.key_block_info_end_offset + self.key_header.keyword_block_packed_size;
+
+        let record_header_len = if self.meta.version >= 2.0 {
+            4 * 8
+        } else {
+            4 * 4
+        };
         self.record_header_end_offset = self.record_header_start_offset + record_header_len as u64;
-        
-        let record_header_buf = self.read_buffer(self.record_header_start_offset, record_header_len)?;
-        
+
+        let record_header_buf =
+            self.read_buffer(self.record_header_start_offset, record_header_len)?;
+
         let mut offset = 0;
         let num_width = self.meta.num_width;
-        
+
         // [0:8/4] - Number of record blocks
-        self.record_header.record_blocks_num = bytes_to_number(&record_header_buf[offset..offset + num_width]);
+        self.record_header.record_blocks_num =
+            bytes_to_number(&record_header_buf[offset..offset + num_width]);
         offset += num_width;
-        
+
         // [8:16/4:8] - Number of entries
-        self.record_header.entries_num = bytes_to_number(&record_header_buf[offset..offset + num_width]);
+        self.record_header.entries_num =
+            bytes_to_number(&record_header_buf[offset..offset + num_width]);
         offset += num_width;
-        
+
         // [16:24/8:12] - Record info compressed size
-        self.record_header.record_info_comp_size = bytes_to_number(&record_header_buf[offset..offset + num_width]);
+        self.record_header.record_info_comp_size =
+            bytes_to_number(&record_header_buf[offset..offset + num_width]);
         offset += num_width;
-        
+
         // [24:32/12:16] - Record block total compressed size
-        self.record_header.record_block_comp_size = bytes_to_number(&record_header_buf[offset..offset + num_width]);
-        
+        self.record_header.record_block_comp_size =
+            bytes_to_number(&record_header_buf[offset..offset + num_width]);
+
         Ok(())
     }
-    
+
     /// Read record block info section
     fn read_record_infos(&mut self) -> Result<()> {
         self.record_info_start_offset = self.record_header_end_offset;
-        
+
         let record_info_size = self.record_header.record_info_comp_size as usize;
         let record_info_buf = self.read_buffer(self.record_info_start_offset, record_info_size)?;
-        
+
         let mut record_info_list = Vec::new();
         let mut offset = 0;
         let mut compressed_adder = 0u64;
         let mut decompression_adder = 0u64;
         let num_width = self.meta.num_width;
-        
+
         for _ in 0..self.record_header.record_blocks_num {
             // Read pack size
             let pack_size = bytes_to_number(&record_info_buf[offset..offset + num_width]);
             offset += num_width;
-            
+
             // Read unpack size
             let unpack_size = bytes_to_number(&record_info_buf[offset..offset + num_width]);
             offset += num_width;
-            
+
             record_info_list.push(RecordInfo {
                 pack_size,
                 pack_accumulate_offset: compressed_adder,
                 unpack_size,
                 unpack_accumulate_offset: decompression_adder,
             });
-            
+
             compressed_adder += pack_size;
             decompression_adder += unpack_size;
         }
-        
+
         self.record_info_list = record_info_list;
         self.record_info_end_offset = self.record_info_start_offset + record_info_size as u64;
         self.record_block_start_offset = self.record_info_end_offset;
-        
+
         Ok(())
     }
-    
+
     /// Strip key for comparison
     pub fn strip(&self, key: &str) -> String {
         let is_mdd = self.meta.ext == FileExt::Mdd;
         let mut result = key.to_string();
-        
+
         // Check StripKey setting
-        let strip_key = self.header.get("StripKey")
+        let strip_key = self
+            .header
+            .get("StripKey")
             .map(|s| s.as_str())
             .unwrap_or("Yes");
-        
+
         if strip_key == "Yes" {
             result = utils::strip_key(&result, is_mdd);
         }
-        
+
         // Check KeyCaseSensitive setting
-        let case_sensitive = self.header.get("KeyCaseSensitive")
+        let case_sensitive = self
+            .header
+            .get("KeyCaseSensitive")
             .map(|s| s.as_str())
             .unwrap_or("No");
-        
+
         if case_sensitive == "No" {
             result = result.to_lowercase();
         }
-        
+
         result.trim().to_string()
     }
-    
+
     /// Compare two keys
     pub fn compare_keys(&self, a: &str, b: &str) -> std::cmp::Ordering {
         let stripped_a = self.strip(a);
         let stripped_b = self.strip(b);
         stripped_a.cmp(&stripped_b)
     }
-    
+
     /// Binary search for keyword by word
     pub fn lookup_keyword_by_word(&self, word: &str, is_associate: bool) -> Option<&KeyWordItem> {
         let list = &self.keyword_list;
         if list.is_empty() {
             return None;
         }
-        
+
         let mut left = 0;
         let mut right = list.len() - 1;
         let mut mid = 0;
-        
+
         while left <= right {
             mid = left + (right - left) / 2;
-            
+
             let cmp_result = self.compare_keys(word, &list[mid].key_text);
-            
+
             match cmp_result {
                 std::cmp::Ordering::Greater => {
                     left = mid + 1;
@@ -603,22 +667,22 @@ impl MdictBase {
                 }
             }
         }
-        
+
         // Check if we found an exact match
-        if self.compare_keys(word, &list[mid].key_text) != std::cmp::Ordering::Equal {
-            if !is_associate {
-                return None;
-            }
+        if self.compare_keys(word, &list[mid].key_text) != std::cmp::Ordering::Equal
+            && !is_associate
+        {
+            return None;
         }
-        
+
         Some(&list[mid])
     }
-    
+
     /// Find record block index by record start offset
     pub fn find_record_block_index(&self, record_start: u64) -> usize {
         let mut left = 0;
         let mut right = self.record_info_list.len();
-        
+
         while left < right {
             let mid = left + (right - left) / 2;
             if record_start >= self.record_info_list[mid].unpack_accumulate_offset {
@@ -627,27 +691,33 @@ impl MdictBase {
                 right = mid;
             }
         }
-        
-        if left > 0 { left - 1 } else { 0 }
+
+        if left > 0 {
+            left - 1
+        } else {
+            0
+        }
     }
-    
+
     /// Lookup record by keyword item
     pub fn lookup_record_by_keyword(&mut self, item: &KeyWordItem) -> Result<Vec<u8>> {
         let record_block_index = self.find_record_block_index(item.record_start_offset);
-        
+
         // Copy needed values to avoid borrowing issues
-        let pack_accumulate_offset = self.record_info_list[record_block_index].pack_accumulate_offset;
+        let pack_accumulate_offset =
+            self.record_info_list[record_block_index].pack_accumulate_offset;
         let pack_size = self.record_info_list[record_block_index].pack_size as usize;
         let unpack_size = self.record_info_list[record_block_index].unpack_size as usize;
-        let unpack_accumulate_offset = self.record_info_list[record_block_index].unpack_accumulate_offset;
-        
+        let unpack_accumulate_offset =
+            self.record_info_list[record_block_index].unpack_accumulate_offset;
+
         // Read compressed record block
         let offset = self.record_block_start_offset + pack_accumulate_offset;
         let record_buffer = self.read_buffer(offset, pack_size)?;
-        
+
         // Decompress record block
         let unpacked_buffer = self.decompress_record_block(&record_buffer, unpack_size)?;
-        
+
         // Calculate relative offsets
         let start = (item.record_start_offset - unpack_accumulate_offset) as usize;
         let end = if item.record_end_offset > 0 {
@@ -655,21 +725,23 @@ impl MdictBase {
         } else {
             unpacked_buffer.len()
         };
-        
+
         Ok(unpacked_buffer[start..end.min(unpacked_buffer.len())].to_vec())
     }
-    
+
     /// Decompress record block
     fn decompress_record_block(&self, record_buffer: &[u8], unpack_size: usize) -> Result<Vec<u8>> {
-        let comp_type = CompressionType::from_bytes(record_buffer)
-            .ok_or_else(|| MdictError::InvalidCompressionType(
-                u32::from_le_bytes([record_buffer[0], record_buffer[1], record_buffer[2], record_buffer[3]])
-            ))?;
-        
+        let comp_type = CompressionType::from_bytes(record_buffer).ok_or_else(|| {
+            MdictError::InvalidCompressionType(u32::from_le_bytes([
+                record_buffer[0],
+                record_buffer[1],
+                record_buffer[2],
+                record_buffer[3],
+            ]))
+        })?;
+
         match comp_type {
-            CompressionType::None => {
-                Ok(record_buffer[8..].to_vec())
-            }
+            CompressionType::None => Ok(record_buffer[8..].to_vec()),
             CompressionType::Lzo => {
                 let data = if self.meta.encrypt == EncryptType::RecordBlock {
                     utils::mdx_decrypt(record_buffer)
@@ -691,15 +763,19 @@ impl MdictBase {
             }
         }
     }
-    
+
     /// Get keywords that start with the given prefix
     pub fn get_prefix_keywords(&self, prefix: &str) -> Vec<&KeyWordItem> {
         self.keyword_list
             .iter()
-            .filter(|item| item.key_text.to_lowercase().starts_with(&prefix.to_lowercase()))
+            .filter(|item| {
+                item.key_text
+                    .to_lowercase()
+                    .starts_with(&prefix.to_lowercase())
+            })
             .collect()
     }
-    
+
     /// Get associated keywords (same key block)
     pub fn get_associated_keywords(&self, word: &str) -> Vec<&KeyWordItem> {
         if let Some(item) = self.lookup_keyword_by_word(word, true) {

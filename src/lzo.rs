@@ -1,5 +1,5 @@
 //! LZO1X decompression implementation
-//! 
+//!
 //! This module provides LZO1X-1 decompression functionality used in MDX/MDD files.
 //! The implementation follows the LZO1X algorithm specification.
 
@@ -9,8 +9,8 @@ use crate::error::{MdictError, Result};
 pub struct Lzo1xDecompressor {
     input: Vec<u8>,
     output: Vec<u8>,
-    ip: usize,  // input pointer
-    op: usize,  // output pointer
+    ip: usize, // input pointer
+    op: usize, // output pointer
 }
 
 impl Lzo1xDecompressor {
@@ -23,28 +23,28 @@ impl Lzo1xDecompressor {
             op: 0,
         }
     }
-    
+
     /// Decompress LZO1X compressed data
     pub fn decompress(&mut self, input: &[u8], output_size: usize) -> Result<Vec<u8>> {
         self.input = input.to_vec();
         self.output = vec![0u8; output_size];
         self.ip = 0;
         self.op = 0;
-        
+
         self.decompress_internal()?;
-        
+
         self.output.truncate(self.op);
         Ok(std::mem::take(&mut self.output))
     }
-    
+
     fn decompress_internal(&mut self) -> Result<()> {
         if self.input.is_empty() {
             return Ok(());
         }
-        
+
         let mut t = self.input[self.ip] as usize;
         self.ip += 1;
-        
+
         // Handle first literal run
         if t > 17 {
             t -= 17;
@@ -52,10 +52,12 @@ impl Lzo1xDecompressor {
             t = self.input[self.ip] as usize;
             self.ip += 1;
             if t < 16 {
-                return Err(MdictError::DecompressionError("Invalid LZO data".to_string()));
+                return Err(MdictError::DecompressionError(
+                    "Invalid LZO data".to_string(),
+                ));
             }
         }
-        
+
         loop {
             if t >= 64 {
                 // Match with 2-byte offset
@@ -70,38 +72,42 @@ impl Lzo1xDecompressor {
                 // Literal run
                 self.literal_run(t)?;
             }
-            
+
             if self.ip >= self.input.len() {
                 break;
             }
-            
+
             t = self.input[self.ip] as usize;
             self.ip += 1;
         }
-        
+
         Ok(())
     }
-    
+
     fn copy_literal(&mut self, mut len: usize) -> Result<()> {
         if self.ip + len > self.input.len() || self.op + len > self.output.len() {
-            return Err(MdictError::DecompressionError("Buffer overflow in literal copy".to_string()));
+            return Err(MdictError::DecompressionError(
+                "Buffer overflow in literal copy".to_string(),
+            ));
         }
-        
+
         while len > 0 {
             self.output[self.op] = self.input[self.ip];
             self.op += 1;
             self.ip += 1;
             len -= 1;
         }
-        
+
         Ok(())
     }
-    
+
     fn match_copy(&mut self, mut len: usize, offset: usize) -> Result<()> {
         if offset > self.op || self.op + len > self.output.len() {
-            return Err(MdictError::DecompressionError("Invalid match offset".to_string()));
+            return Err(MdictError::DecompressionError(
+                "Invalid match offset".to_string(),
+            ));
         }
-        
+
         let mut src = self.op - offset;
         while len > 0 {
             self.output[self.op] = self.output[src];
@@ -109,31 +115,31 @@ impl Lzo1xDecompressor {
             src += 1;
             len -= 1;
         }
-        
+
         Ok(())
     }
-    
+
     fn match_copy_2(&mut self, t: usize) -> Result<()> {
         // 2-byte match with short offset
         let len = (t >> 5) + 1;
         let offset = ((t & 0x1f) << 3) + (self.input[self.ip] as usize >> 5) + 1;
         self.ip += 1;
-        
+
         self.match_copy(len + 2, offset)?;
-        
+
         // Handle trailing literal
         let next = self.input[self.ip - 1] & 0x1f;
         if next > 0 {
             self.copy_literal(next as usize)?;
         }
-        
+
         Ok(())
     }
-    
+
     fn match_copy_var(&mut self, t: usize) -> Result<()> {
         // Variable length match
         let mut len = t & 0x1f;
-        
+
         if len == 0 {
             // Extended length
             while self.ip < self.input.len() && self.input[self.ip] == 0 {
@@ -141,28 +147,32 @@ impl Lzo1xDecompressor {
                 self.ip += 1;
             }
             if self.ip >= self.input.len() {
-                return Err(MdictError::DecompressionError("Unexpected end of input".to_string()));
+                return Err(MdictError::DecompressionError(
+                    "Unexpected end of input".to_string(),
+                ));
             }
             len += 31 + self.input[self.ip] as usize;
             self.ip += 1;
         }
-        
+
         if self.ip + 1 >= self.input.len() {
-            return Err(MdictError::DecompressionError("Unexpected end of input".to_string()));
+            return Err(MdictError::DecompressionError(
+                "Unexpected end of input".to_string(),
+            ));
         }
-        
+
         let offset = (self.input[self.ip] as usize) + ((self.input[self.ip + 1] as usize) << 8) + 1;
         self.ip += 2;
-        
+
         self.match_copy(len + 2, offset)?;
-        
+
         Ok(())
     }
-    
+
     fn match_copy_long(&mut self, t: usize) -> Result<()> {
         // Long match with 2-byte offset
         let mut len = t & 0x07;
-        
+
         if len == 0 {
             // Extended length
             while self.ip < self.input.len() && self.input[self.ip] == 0 {
@@ -170,19 +180,23 @@ impl Lzo1xDecompressor {
                 self.ip += 1;
             }
             if self.ip >= self.input.len() {
-                return Err(MdictError::DecompressionError("Unexpected end of input".to_string()));
+                return Err(MdictError::DecompressionError(
+                    "Unexpected end of input".to_string(),
+                ));
             }
             len += 7 + self.input[self.ip] as usize;
             self.ip += 1;
         }
-        
+
         if self.ip + 1 >= self.input.len() {
-            return Err(MdictError::DecompressionError("Unexpected end of input".to_string()));
+            return Err(MdictError::DecompressionError(
+                "Unexpected end of input".to_string(),
+            ));
         }
-        
+
         let offset = (self.input[self.ip] as usize) + ((self.input[self.ip + 1] as usize) << 8);
         self.ip += 2;
-        
+
         if t >= 24 {
             // 16K offset
             let offset = offset + 0x4000;
@@ -190,13 +204,13 @@ impl Lzo1xDecompressor {
         } else {
             self.match_copy(len + 2, offset)?;
         }
-        
+
         Ok(())
     }
-    
+
     fn literal_run(&mut self, t: usize) -> Result<()> {
         let mut len = t;
-        
+
         if len == 0 {
             // Extended length
             while self.ip < self.input.len() && self.input[self.ip] == 0 {
@@ -204,20 +218,22 @@ impl Lzo1xDecompressor {
                 self.ip += 1;
             }
             if self.ip >= self.input.len() {
-                return Err(MdictError::DecompressionError("Unexpected end of input".to_string()));
+                return Err(MdictError::DecompressionError(
+                    "Unexpected end of input".to_string(),
+                ));
             }
             len += 15 + self.input[self.ip] as usize;
             self.ip += 1;
         }
-        
+
         self.copy_literal(len + 3)?;
-        
+
         Ok(())
     }
 }
 
 /// Decompress LZO1X data
-/// 
+///
 /// This function uses the minilzo-rs crate for reliable decompression.
 /// Falls back to our implementation if the crate fails.
 pub fn decompress(input: &[u8], output_size: usize) -> Result<Vec<u8>> {
@@ -244,7 +260,7 @@ pub fn decompress(input: &[u8], output_size: usize) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_decompress_empty() {
         let result = decompress(&[], 0);
