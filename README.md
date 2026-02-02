@@ -36,7 +36,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rust-mdict = "0.1.0"
+rs-mdict = "0.1.0"
 ```
 
 ## Usage
