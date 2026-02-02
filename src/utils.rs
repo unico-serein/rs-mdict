@@ -194,7 +194,7 @@ pub fn strip_key(key: &str, is_mdd: bool) -> String {
 pub fn fast_decrypt(data: &mut [u8], key: &[u8]) {
     let mut previous: u8 = 0x36;
     for (i, byte) in data.iter_mut().enumerate() {
-        let t = ((*byte >> 4) | (*byte << 4)) ^ previous ^ (i as u8) ^ key[i % key.len()];
+        let t = (*byte).rotate_left(4) ^ previous ^ (i as u8) ^ key[i % key.len()];
         previous = *byte;
         *byte = t;
     }

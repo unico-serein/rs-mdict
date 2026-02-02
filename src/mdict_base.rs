@@ -214,11 +214,10 @@ impl MdictBase {
         let key_header_buf = self.read_buffer(self.key_header_start_offset, header_meta_size)?;
 
         // Check encryption
-        if self.meta.encrypt == EncryptType::RecordBlock {
-            if self.meta.passcode.is_none() {
+        if self.meta.encrypt == EncryptType::RecordBlock
+            && self.meta.passcode.is_none() {
                 return Err(MdictError::EncryptedFileRequiresPasscode);
             }
-        }
 
         let mut offset = 0;
         let num_width = self.meta.num_width;
@@ -324,12 +323,10 @@ impl MdictBase {
                 } else {
                     first_word_size_raw + 1
                 }
+            } else if is_utf16 {
+                first_word_size_raw * 2
             } else {
-                if is_utf16 {
-                    first_word_size_raw * 2
-                } else {
-                    first_word_size_raw
-                }
+                first_word_size_raw
             };
 
             // Read first word
@@ -347,12 +344,10 @@ impl MdictBase {
                 } else {
                     last_word_size_raw + 1
                 }
+            } else if is_utf16 {
+                last_word_size_raw * 2
             } else {
-                if is_utf16 {
-                    last_word_size_raw * 2
-                } else {
-                    last_word_size_raw
-                }
+                last_word_size_raw
             };
 
             // Read last word
@@ -483,14 +478,10 @@ impl MdictBase {
             let mut key_end_index = None;
             let mut i = key_start_index + num_width;
             while i < key_block.len() {
-                if width == 1 && key_block[i] == 0 {
-                    key_end_index = Some(i);
-                    break;
-                } else if width == 2
+                if (width == 1 && key_block[i] == 0) || (width == 2
                     && i + 1 < key_block.len()
                     && key_block[i] == 0
-                    && key_block[i + 1] == 0
-                {
+                    && key_block[i + 1] == 0) {
                     key_end_index = Some(i);
                     break;
                 }
