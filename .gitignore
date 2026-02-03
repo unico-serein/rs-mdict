@@ -1,2 +1,8 @@
 # ignore target folder
 target/
+
+
+**/*.mdd
+**/*.mdx
+
+**/.DS_Store

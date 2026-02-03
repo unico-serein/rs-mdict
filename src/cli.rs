@@ -17,6 +17,7 @@ fn print_usage() {
     eprintln!("  mdict-cli <file.mdx> suggest <word>   - Suggest similar words in MDX");
     eprintln!("  mdict-cli <file.mdx> info             - Show MDX dictionary info");
     eprintln!("  mdict-cli <file.mdd> locate <key>     - Locate resource in MDD file");
+    eprintln!("  mdict-cli <file.mdd> prefix <prefix>  - Find resources with prefix in MDD");
     eprintln!("  mdict-cli <file.mdd> info             - Show MDD file info");
 }
 

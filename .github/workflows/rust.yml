@@ -18,5 +18,9 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build
       run: cargo build --verbose
+    - name: Fetch test mdx
+      run: curl -sSL -o tests/test.mdx https://downloads.freemdict.com/%E5%B0%9A%E6%9C%AA%E6%95%B4%E7%90%86/%E5%85%B1%E4%BA%AB2020.5.11/content/1_english/3_Oxford%20series/%E7%AE%80%E6%98%8E%E7%89%9B%E6%B4%A5%E8%8B%B1%E8%AF%AD%E8%AF%8D%E5%85%B8%E7%AC%AC11%E7%89%88/%E7%AE%80%E6%98%8E%E7%89%9B%E6%B4%A5%E8%8B%B1%E8%AF%AD%E8%AF%8D%E5%85%B8%E7%AC%AC11%E7%89%88.mdx
+    - name: Fetch test mdd
+      run: curl -sSL -o tests/test.mdd https://downloads.freemdict.com/%E5%B0%9A%E6%9C%AA%E6%95%B4%E7%90%86/%E5%85%B1%E4%BA%AB2020.5.11/qwjs/37_%E9%9F%A6%E6%B0%8F%E5%A4%A7%E5%AD%A6/Merriam-Webster%27s%20Collegiate%20Dictionary%20and%20Thesaurus%2C%202015.mdd
     - name: Run tests
       run: cargo test --verbose

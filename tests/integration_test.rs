@@ -2,8 +2,8 @@
 
 use rust_mdict::{Mdd, Mdx};
 
-const MDX_PATH: &str = "/Users/fuyanxu/Documents/dict/牛津高阶英汉双解词典（第9版）.mdx";
-const MDD_PATH: &str = "/Users/fuyanxu/Documents/dict/牛津高阶英汉双解词典（第9版）.mdd";
+const MDX_PATH: &str = "tests/test.mdx";
+const MDD_PATH: &str = "tests/test.mdd";
 
 #[test]
 fn test_mdx_load() {
