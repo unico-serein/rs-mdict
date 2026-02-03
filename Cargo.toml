@@ -7,6 +7,14 @@ license = "MIT"
 authors = ["rust-mdict contributors"]
 keywords = ["mdict", "mdx", "mdd", "dictionary"]
 categories = ["parsing", "text-processing"]
+exclude = [
+  ".github/**",
+  ".vscode/**",
+  "target/**",
+  "**/*.mdx",
+  "**/*.mdd",
+]
+
 
 [dependencies]
 # Encoding support
@@ -38,3 +46,5 @@ path = "src/cli.rs"
 
 [profile.release]
 lto = "fat"
+
+
